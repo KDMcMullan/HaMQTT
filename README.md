@@ -35,3 +35,9 @@ Added the LED functionality. Got it to rebroadcast the sequence in voice.
 - Parser now detects sequences to open and close the relay.
 - Timer to auto-close the relay to commands is implemented.
 - Timer to ensure callsign is broadcast periodically is implemented.
+
+### v0.91.05 20240303
+
+- Fixed a bug with message acknowledge where zero had been written to the the 0th item of the string.
+- Audio responses for open, close, acknowledge, no acknowledge, all working.
+- Callsign added to outgoing Tx at the allotec delta time.
