@@ -29,21 +29,23 @@
 /* Timer to auto-close the relay to commands is implemented.
 /* Timer to ensure callsign is broadcast periodically is implemented.
 /*
+/* v0.91.05 20240303
+/* Fixed a bug with message acknowledge where zero had been written to the
+/* the 0th item of the string.
+/* Audio responses for open, close, acknowledge, no acknowledge, all working.
+/* Callsign added to outgoing Tx at the allotec delta time.
+/*
 /****************************************************************************/
 /*
 /* To Do
 /*
-/* Add the voice response to received sequences.
-/*
 /* add the ESP8266 hardware and the MQTT pub / sub.
-/*
-/* Why does Arduino loose USB connection when firmware keys the PTT?
 /*
 /****************************************************************************/
 /*
 /* Notes:
 /*
-/* Don't forget that the connected radio has to have the volume up. A setting
+/* Don't forget that the connected radio must have the volume up. A setting
 /* between 1/4 and 3/4 is suggested.
 /*
 /****************************************************************************/
@@ -82,8 +84,8 @@
 #define openStr  "E12A" // "*12A" DTMF sequence to open the relay
 #define closeStr "FFFF" // "####" DTMF sequence to close the relay
 
-#define closeTime 180000 // milliseconds before auto-close (3 minutes)
-#define callTime   60000 // milliseconds between callsign broadcast (1 minute)
+#define closeTime 300000 // milliseconds before auto-close (5min)
+#define callTime  120000 // milliseconds between callsign broadcast (2min)
 
 #define interTime  3000 // time in ms allowed between characters before timeout
 #define flashTime   250 // half rate in ms of flashing LED
@@ -101,11 +103,12 @@ unsigned char strPos;                 // index into DTMF string
 bool relayOpen;                       // flag that the relay is open
 bool OnLED;                           // Flashing LED status
 bool parse = false;                   // there is a received message to parse
-bool addCallsign;                     // callsign to be added
-char VoiceResponse[10];               // response string
+bool addCallsign = true;              // callsign to be added
+uint8_t* VoiceResponse[10];           // response to a reeived DTMF sequence
 char MQTTresponse[10];                // response string
 char DTMFstr[strLen +1];              // read DTMF string including nul
-char utterance;                       // next thing to be said
+// Author callsign, at tiem of writing.
+uint8_t* CallSign[] = {spMIKE, spSEVEN, spKILO, spCHARLIE, spMIKE, spALTERNATE, 0};
 
 // These are the characters we store when the given numbers are received by
 // the MT8870 module. The info that 0 = D, for example, seems odd, but comes
@@ -136,6 +139,15 @@ enum LEDMode { LED_OFF, LED_ON, LED_FLASH };
 
 enum DTMFmode DTMFmode = DTMF_IDLE;
 enum LEDMode LEDmode = LED_OFF;
+
+void SayString(uint8_t* speech[]) {
+  unsigned int i = 0;
+  while (speech[i] != 0) {
+    voice.say(speech[i]);
+    i++;
+  } // not done
+
+} // SayString
 
 void loop()
 {
@@ -199,7 +211,7 @@ void loop()
     parse = false; // mark as parsed
     Serial.print("PARSING... ");
     strcpy("",MQTTresponse);
-    strcpy("",VoiceResponse);
+    VoiceResponse[0] = 0;
     if (!strcmp(DTMFstr,openStr)) {
       openStart = millis(); // note the time
       relayOpen = true;   // relay is open
@@ -219,16 +231,16 @@ void loop()
         openStart = millis(); // note the time (assuming it was legit)
         Serial.print("MESSAGE: ");
         Serial.print(DTMFstr);
-        Serial.println(" acknowledged");
+        Serial.println(" QSL (acknowledged)");
         strcpy(DTMFstr,MQTTresponse);
         VoiceResponse[0] = spQ; // QSL = acknowledge
         VoiceResponse[1] = spS;
         VoiceResponse[2] = spL;
-        VoiceResponse[0] = 0;
+        VoiceResponse[3] = 0;
       } else { // relay not open
         Serial.print("MESSAGE: ");
         Serial.print(DTMFstr);
-        Serial.println(" not acknowledged");
+        Serial.println(" NO QSL (not acknowledged)");
         strcpy("",MQTTresponse);
         VoiceResponse[0] = spNO; // No QSL = no acknowledge
         VoiceResponse[1] = spQ;
@@ -240,23 +252,28 @@ void loop()
     } // switch DTMFstr  
   }
 
-  if (relayOpen) { // timeout open relay
-    if (millis() > openStart + closeTime) {
+  if (relayOpen) { // if relay is open
+    if (millis() > openStart + closeTime) { // and it has timed out
       relayOpen = false;   // relay is open
       Serial.println("Relay AUTO-CLOSE");
       VoiceResponse[0] = spAUTOMATIC;
       VoiceResponse[1] = spCLOSE;
       VoiceResponse[2] = 0;
     } // timed out
+
+    // other things to do if it is open bt not timed out, otherwise, compound the logic
+
   }
 
   if (millis() > callStart + callTime) { // check last time callsign was added
     callStart = millis();
+    if (!addCallsign) {
+      Serial.println("CALLSIGN needs added");
+    }
     addCallsign = true; // needs to be set false after being quqeued
-//    Serial.println("Adding CALLSIGN");
   }
 
-  if (millis() > flashStart + flashTime) { // is it time totoggle the flash?
+  if (millis() > flashStart + flashTime) { // is it time to toggle the flash?
     flashStart = millis();
     switch (LEDmode) { // refresh LED
       case LED_OFF:
@@ -272,22 +289,31 @@ void loop()
     } // LEDmode    
   } // if FlashStart
 
-  if (false) {
-
-    Serial.print("Txing... ");
-
+  if (VoiceResponse[0] != 0) {
+    Serial.print("Tx VOICE ");
     digitalWrite(PTT, HIGH); // Turn PTT on
     digitalWrite(LED, HIGH); // Turn on LED
-
     // transmit the contents of VoiceResponse[] 
     // if it's a callsign, don't forget to add "spALTERNATE" 
+    // implement periodic callsign Tx here
+    delay(500); // pause before speaking
 
+    // NB present logic is to only add the callsign IF there is a message to
+    // send. The callsign might, alternatively, be broadcast on a regular
+    // basis, but etiquette suggest it would be rude to blag a channel.
+
+    if (addCallsign) { // add callsign as required
+      addCallsign = false;
+      SayString(CallSign);
+      delay(500); // pause after callsign
+    }
+
+    SayString(VoiceResponse);
     digitalWrite(PTT, LOW); // Turn PTT on
     digitalWrite(LED, LOW); // Turn on LED
-
-    Serial.println(" DONE");
-
-  }
+    VoiceResponse[0] = 0;
+    Serial.println("done");
+  } // VoiceResponse is non-empty
 
   delay(100); // give the processor a wee break
 
