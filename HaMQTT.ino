@@ -5,7 +5,7 @@
 /*
 /* Ken McMullan
 /* Inspired by WO4ROB
-/* v0.90.04 20240227
+/* v0.91.05 20240303
 /*
 /****************************************************************************/
 /*
@@ -33,7 +33,11 @@
 /* Fixed a bug with message acknowledge where zero had been written to the
 /* the 0th item of the string.
 /* Audio responses for open, close, acknowledge, no acknowledge, all working.
-/* Callsign added to outgoing Tx at the allotec delta time.
+/* Callsign added to outgoing Tx at the aloted delta time.
+/* Sketch uses 7270 bytes (22%) of program storage space. Maximum is 32256
+/* bytes.
+/* Global variables use 894 bytes (43%) of dynamic memory, leaving 1154 bytes
+/* for local variables. Maximum is 2048 bytes.
 /*
 /****************************************************************************/
 /*
@@ -107,7 +111,7 @@ bool addCallsign = true;              // callsign to be added
 uint8_t* VoiceResponse[10];           // response to a reeived DTMF sequence
 char MQTTresponse[10];                // response string
 char DTMFstr[strLen +1];              // read DTMF string including nul
-// Author callsign, at tiem of writing.
+// Author's callsign, at time of writing:
 uint8_t* CallSign[] = {spMIKE, spSEVEN, spKILO, spCHARLIE, spMIKE, spALTERNATE, 0};
 
 // These are the characters we store when the given numbers are received by
