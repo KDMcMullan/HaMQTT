@@ -41,3 +41,8 @@ Added the LED functionality. Got it to rebroadcast the sequence in voice.
 - Fixed a bug with message acknowledge where zero had been written to the the 0th item of the string.
 - Audio responses for open, close, acknowledge, no acknowledge, all working.
 - Callsign added to outgoing Tx at the allotec delta time.
+
+### v0.92.06 20240306
+- Refactored MQTTresponse for MQTTout to distinguish it later from incoming.
+- Added a software serial port for transmission of DTMF string back to TASMOTA on the ESP8266. TASMOTA automatically publishes this by MQTT.
+
