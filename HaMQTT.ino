@@ -5,7 +5,7 @@
 /*
 /* Ken McMullan
 /* Inspired by WO4ROB
-/* v0.92.06 20240306
+/* v0.92.08 20240310
 /*
 /****************************************************************************/
 /*
@@ -44,11 +44,26 @@
 /* Added a software serial port for transmission of DTMF string back to
 /* TASMOTA on the ESP8266. TASMOTA automatically publishes this by MQTT.
 /*
+/* v0.92.07 20240308
+/* Basic serial port receiver implemented.
+/*
+/* v0.92.08 20240310
+/* Modified Serial Receive so it can't get stuck in a loop.
+/* Refactored MQTTout for serOut, and MQTTin for serIn.
+/* changed back to ABCD*# instead of ABCDEF. We'll work in decima instead
+/* of hex.
+/* Formatted serial output into something resembling a JSON dictionary.
+/*
 /****************************************************************************/
 /*
 /* To Do
 /*
-/* add the ESP8266 hardware and the MQTT pub / sub.
+/* NB if the serial string is longer than serLen, the program will crash.
+/* The string {"type":"STATUS","DATA":"12345678"} is already 35 characters.
+/*
+/* Implement better serIn pub / sub.
+/* Implement address / data set / get protocol.
+/* Once protocol supports local settings, store timeouts, etc in EEPROM.
 /*
 /****************************************************************************/
 /*
@@ -92,8 +107,8 @@
 
 #define LED 13 // onboard LED
 
-#define openStr  "E12A" // "*12A" DTMF sequence to open the relay
-#define closeStr "FFFF" // "####" DTMF sequence to close the relay
+#define openStr  "*12A" // DTMF sequence to open the relay ex E12A
+#define closeStr "####" // DTMF sequence to close the relay exFFFF
 
 #define closeTime 300000 // milliseconds before auto-close (5min)
 #define callTime  120000 // milliseconds between callsign broadcast (2min)
@@ -101,31 +116,37 @@
 #define interTime  3000 // time in ms allowed between characters before timeout
 #define flashTime   250 // half rate in ms of flashing LED
 
-#define strLen 8        // max length of user input
+#define DTMFlen  8       // max length of user DTMF input
+#define respLen 10       // max length of voice response
+#define serLen  40       // max length of serial string
 
 Talkie voice; 
+
+// Author's callsign, at time of writing:
+uint8_t* CallSign[] = {spMIKE, spSEVEN, spKILO, spCHARLIE, spMIKE, spALTERNATE, 0};
 
 unsigned long waitStart = millis();   // time of start to wait for next char
 unsigned long flashStart = millis();  // time of last LED toggle
 unsigned long openStart = millis();   // time of "opening" relay
 unsigned long callStart = millis();   // time of last callsign
 unsigned char newCh;                  // DTMF character
-unsigned char strPos;                 // index into DTMF string
+unsigned char DTMFpos;                // index into DTMF string
+unsigned char serPos;                 // index into serial string
 bool relayOpen;                       // flag that the relay is open
 bool OnLED;                           // Flashing LED status
 bool parse = false;                   // there is a received message to parse
 bool addCallsign = true;              // callsign to be added
-uint8_t* VoiceResponse[10];           // response to a reeived DTMF sequence
-char MQTTout[strLen + 3];             // response string (including demarcation)
-char DTMFstr[strLen +1];              // read DTMF string including nul
-// Author's callsign, at time of writing:
-uint8_t* CallSign[] = {spMIKE, spSEVEN, spKILO, spCHARLIE, spMIKE, spALTERNATE, 0};
+uint8_t* VoiceResponse[respLen];      // response to transmit touser
+char serOut[serLen + 1];              // serial string to send including nul
+char serIn[serLen + 1];               // MQTT string received including nul
+char DTMFstr[DTMFlen + 1];            // read DTMF string including nul
 
 // These are the characters we store when the given numbers are received by
 // the MT8870 module. The info that 0 = D, for example, seems odd, but comes
 // diretly from the data sheet. It is acknowledged that 11 and 12 should be
 // "*" and "#" respectively, but we're trying to make hex numbers.
-char numStr[] = "D1234567890EFABC";
+// char numStr[] = "D1234567890EFABC";
+char numStr[] = "D1234567890*#ABC";
 
 SoftwareSerial swSerial(swRx, swTx);
 
@@ -144,6 +165,8 @@ void setup()
   pinMode(swRx, INPUT); // software serial port pin config
   pinMode(swTx, OUTPUT);  
 
+  digitalWrite(PTT, LOW); // Turn PTT off
+
   Serial.begin(9600); // hardware (debug) serial
 
   swSerial.begin(9600); // software serial 
@@ -154,10 +177,23 @@ void setup()
 } // setup
 
 enum DTMFmode { DTMF_IDLE, DTMF_RX, DTMF_WAIT, DTMF_FULL, DTMF_END };
-enum LEDMode { LED_OFF, LED_ON, LED_FLASH };
-
 enum DTMFmode DTMFmode = DTMF_IDLE;
+
+enum LEDMode { LED_OFF, LED_ON, LED_FLASH };
 enum LEDMode LEDmode = LED_OFF;
+
+enum serMode { SER_WAIT, SER_READ, SER_DONE };
+enum serMode serMode = SER_WAIT;
+
+void *buildDict(char *dest, const char *type, const char *data) { // build the output dictionary entry
+
+  strcpy(dest,"{\"TYPE\":\"");   // move open dict into dest 
+  strcat(dest,type);             // append type onto dest 
+  strcat(dest,"\",\"DATA\":\""); // append separator to dest
+  strcat(dest,data);             // append data to dest
+  strcat(dest,"\"}");            // append close dict to type 
+
+}
 
 void SayString(uint8_t* speech[]) { // speak an array of arrays
   unsigned int i = 0;
@@ -172,7 +208,7 @@ void loop()
   switch (DTMFmode) {
     case DTMF_IDLE:
       if (digitalRead(STQ)) { // STQ has gone high
-        strPos = 0; // reset string pointer
+        DTMFpos = 0; // reset string pointer
         LEDmode = LED_FLASH; // indicates receiving
         DTMFmode = DTMF_RX;
         Serial.print("Rx: ");
@@ -185,13 +221,13 @@ void loop()
 
         // convert the IO bits into a decimal number then into a string
         newCh = ( digitalRead(Q1) | (digitalRead(Q2) << 1) | (digitalRead(Q3) << 2) | (digitalRead(Q4) << 3) );
-        DTMFstr[strPos] = numStr[newCh]; // look it up and store it
+        DTMFstr[DTMFpos] = numStr[newCh]; // look it up and store it
 
-        Serial.print(DTMFstr[strPos]);
+        Serial.print(DTMFstr[DTMFpos]);
 
-        strPos++; // increment string pointer
+        DTMFpos++; // increment string pointer
 
-        if(strPos >= strLen) { // is input buffer full?
+        if(DTMFpos >= DTMFlen) { // is input buffer full?
           DTMFmode = DTMF_FULL;
         } else {
           DTMFmode = DTMF_WAIT;
@@ -216,7 +252,7 @@ void loop()
       break; // DTMF_FULL
 
     case DTMF_END:
-      DTMFstr[strPos] = 0; // terminator
+      DTMFstr[DTMFpos] = 0; // terminator
       Serial.println(DTMFstr);
       parse = true;
       DTMFmode = DTMF_IDLE;
@@ -228,7 +264,7 @@ void loop()
   if (parse) {
     parse = false; // mark as parsed
     Serial.print("PARSING... ");
-    MQTTout[0] = 0;
+    serOut[0] = 0;
     VoiceResponse[0] = 0;
     if (!strcmp(DTMFstr,openStr)) { // DTMF sequence for "open" received
       openStart = millis(); // note the time
@@ -236,13 +272,13 @@ void loop()
       Serial.println("Relay OPEN");
       VoiceResponse[0] = spOPEN;
       VoiceResponse[1] = 0;
-      strcpy(MQTTout,"OPEN");
+      buildDict(serOut,"STATUS","OPEN");
     } else if (!strcmp(DTMFstr, closeStr)) { // DTMF sequence for "close" received
       relayOpen = false;  // relay is closed
       Serial.println("Relay CLOSE");
       VoiceResponse[0] = spCLOSE;
       VoiceResponse[1] = 0;
-      strcpy(MQTTout,"CLOSED");
+      buildDict(serOut,"STATUS","CLOSED");
     } else {                              // some other DTMF sequence received
       if (relayOpen) {
         // the thing we do with messages goes here
@@ -250,7 +286,8 @@ void loop()
         Serial.print("MESSAGE: ");
         Serial.print(DTMFstr);
         Serial.println(" QSL (acknowledged)");
-        strcpy(MQTTout, DTMFstr); // REMEMBER destination, source
+        buildDict(serOut,"DTMF",DTMFstr);
+//        strcpy(serOut, DTMFstr); // REMEMBER destination, source
         VoiceResponse[0] = spQ; // QSL = acknowledge
         VoiceResponse[1] = spS;
         VoiceResponse[2] = spL;
@@ -259,7 +296,7 @@ void loop()
         Serial.print("MESSAGE: ");
         Serial.print(DTMFstr);
         Serial.println(" NO QSL (not acknowledged)");
-        strcpy(MQTTout,"");
+        serOut[0] = 0;
         VoiceResponse[0] = spNO; // No QSL = no acknowledge
         VoiceResponse[1] = spQ;
         VoiceResponse[2] = spS;
@@ -273,7 +310,7 @@ void loop()
   if (relayOpen && millis() > openStart + closeTime) { // relay is open but has timed out
     relayOpen = false;   // relay is open
     Serial.println("Relay AUTO-CLOSE");
-    strcpy(MQTTout,"CLOSED");
+    buildDict(serOut,"STATUS","CLOSED");
     VoiceResponse[0] = spAUTOMATIC;
     VoiceResponse[1] = spCLOSE;
     VoiceResponse[2] = 0;
@@ -303,11 +340,43 @@ void loop()
     } // LEDmode    
   } // if FlashStart
 
-  if (MQTTout[0] != 0) { // outgoing MQTT publication
-    Serial.print("MQTT pub: ");
-    Serial.println(MQTTout);
-    swSerial.print(MQTTout);
-    MQTTout[0] = 0;
+  if (serOut[0] != 0) { // outgoing MQTT publication
+    Serial.print("Serial Send: ");
+    Serial.println(serOut);
+    swSerial.print(serOut);
+    serOut[0] = 0;
+  }
+
+  switch (serMode) {
+    case SER_WAIT: // not receiving
+      if (swSerial.available() > 0) { // incoming data is waiting
+        serPos = 0;
+        serMode = SER_READ;
+      }
+      break;
+    case SER_READ: // receiving
+      Serial.print("Serial read ");
+      if (swSerial.available() > 0) { // keep receiving until buffer is empty
+        serIn[serPos] = swSerial.read();
+        if (serIn[serPos] == 10) { serIn[serPos] = 0; } // replace linefeed with EOL
+        if (serPos < serLen) { serPos +=1; } // increment only if no overflow
+      } else { // no more serial
+        Serial.println("DONE");
+        serMode = SER_DONE;
+      }
+    break;
+    case SER_DONE: // not receiving, waiting for local buffer to be emptied
+      if (serIn[0] == 0) {
+        serMode = SER_WAIT;
+      }
+      break;
+  }
+
+  if (serIn[0] != 0) { // local buffer contains something
+    Serial.print("Serial Received: [");
+    Serial.print(serIn); // seems to terminate with linefeed...
+    Serial.println("]");
+    serIn[0] = 0; // start filling local buffer again
   }
 
   if (VoiceResponse[0] != 0) { // transmit the contents of VoiceResponse
@@ -338,6 +407,6 @@ void loop()
 
   } // VoiceResponse is non-empty
 
-  delay(100); // give the processor a wee break
+  delay(10); // give the processor a wee break
 
 } // loop
