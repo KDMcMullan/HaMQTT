@@ -72,3 +72,9 @@ Added the LED functionality. Got it to rebroadcast the sequence in voice.
 - Refactored MQTTresponse for MQTTout to distinguish it later from incoming.
 - Added a software serial port for transmission of DTMF string back to TASMOTA on the ESP8266. TASMOTA automatically publishes this by MQTT.
 
+### v0.92.08 20240310
+- Modified Serial Receive so it can't get stuck in a loop.
+- Refactored MQTTout for serOut, and MQTTin for serIn.
+- Changed back to ABCD*# instead of ABCDEF. We'll work in decimal instead of hex.
+- Formatted serial output into something resembling a JSON dictionary.
+
