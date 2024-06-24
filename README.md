@@ -45,3 +45,17 @@ Initially, I had used [TASMOTA](https://tasmota.github.io/) to act as the WiFi a
 - Changed back to ABCD*# instead of ABCDEF. We'll work in decimal instead of hex.
 - Formatted serial output into something resembling a JSON dictionary.
 
+### v0.94.11 20240509
+- Ported everything over to a single Arduino: MQTT functioning on ESP8288 (D1 Mini), using MT8870.
+
+### v0.94.12 20240610
+- This has some debug code to generate beeps. Next version will remove that.
+
+### v0.94.13 20240616
+- Working implementation of https://github.com/earlephilhower/ESP8266Audio.
+
+### v0.94.14 20240624
+- Better implementation of ESP8266Audio.
+- Demonstrates ability to output a received MQTT string. (A string message published to topic mqtt/tx will be transmitted by the radio.)
+- Groundwork started on publishing MQTT as a python-style dictionary.
+- Breaking change: Start of implementation of input (command / query) protocol. (*701 and *700 used to open and close communications.)
