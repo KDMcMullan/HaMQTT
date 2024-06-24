@@ -45,6 +45,9 @@ Initially, I had used [TASMOTA](https://tasmota.github.io/) to act as the WiFi a
 - Changed back to ABCD*# instead of ABCDEF. We'll work in decimal instead of hex.
 - Formatted serial output into something resembling a JSON dictionary.
 
+### v0.93.10 20240403
+- Trying to patch this back together to work on an ESP8266 without the Arduino, TASMOTA, or MT8770.
+
 ### v0.94.11 20240509
 - Ported everything over to a single Arduino: MQTT functioning on ESP8288 (D1 Mini), using MT8870.
 
