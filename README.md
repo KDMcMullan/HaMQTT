@@ -14,17 +14,15 @@ Initially, I had used [TASMOTA](https://tasmota.github.io/) to act as the WiFi a
 - Can the Arduino perform the DTMF decoding? (The would allow the removal of the DTMF hardware.)
 - Consider adding audio streaming, allowing actual voice samples ratehr than electronic voice.
 
-
 ## History
 ### v0.90.01 20240223
-
-Test program using WO4ROB's schematic and software, but without the relay outputs. It proves the principle.
+- Test program using WO4ROB's schematic and software, but without the relay outputs. It proves the principle.
 
 ### v0.90.02 20240224
-My hardware still doesn't have the ESP8266 / TASMOTA function yet, but I've coded a robust way to receive a DTMF string rather than single digits. 
+- My hardware still doesn't have the ESP8266 / TASMOTA function yet, but I've coded a robust way to receive a DTMF string rather than single digits. 
 
 ### v0.90.03 20240225
-Added the LED functionality. Got it to rebroadcast the sequence in voice.
+- Added the LED functionality. Got it to rebroadcast the sequence in voice.
 
 ### v0.90.04 20240229
 - Started building the MQTT response protocol.
