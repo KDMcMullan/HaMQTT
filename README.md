@@ -62,3 +62,9 @@ Initially, I had used [TASMOTA](https://tasmota.github.io/) to act as the WiFi a
 - Demonstrates ability to output a received MQTT string. (A string message published to topic mqtt/tx will be transmitted by the radio.)
 - Groundwork started on publishing MQTT as a python-style dictionary.
 - Breaking change: Start of implementation of input (command / query) protocol. (*701 and *700 used to open and close communications.)
+
+### v0.95.00 20240626
+- Implemented Auto-close.
+- Now publishes an MQTT message on receipt of a DTMF sequence, if the relay is open.
+- Periodically publishes an MQTT status message, and network information, even if relay is closed.
+- Added in some QSO / no QSO counters just for sport.
