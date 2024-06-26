@@ -20,7 +20,7 @@
 /* In March, I decided to remove the Arduino, the MT8770, and TASMOTA, and
 /* try to make everything happen on the ESP8266. I could not get PhoneDTMF
 /* to work and restored the MT8770. Several folk claim to have got the
-/* Goertzel algorithm to work. I would really like to reducemy hardware
+/* Goertzel algorithm to work. I would really like to reduce my hardware
 /* footprint, but for now I have MQTT working and I'm focussing on getting
 /* audio response back out of the system. I'll have another go at some point.
 /* (See also https://github.com/Estylos/PhoneDTMF/ .)
@@ -42,11 +42,17 @@
 /* protocol. (*701 and *700 used to open and close communications.)
 /* Groundwork started on publishing MQTT as a python-style dictionary.
 /*
+/* v0.95.00 20240626
+/* Implemented Auto-close.
+/* Now publishes an MQTT message on receipt of a DTMF sequence, if the relay
+/* is open.
+/* Periodically publishes an MQTT status message, and network information,
+/* even if relay is closed.
+/* Added in some QSO / no QSO counters just for sport.
+/*
 /****************************************************************************/
 /*
 /* To Do
-/*
-/* Implement auto-close.
 /*
 /* Make setup_wifi() and connect() non-blocking
 /*  - Clearly, don't attempt connect() unil WiFi is connected
@@ -100,6 +106,7 @@
 #define DTMFlen       8 // max length of user DTMF input
 #define voiceLen    100 // max length (characters) of voice response
 #define flashTime   250 // half rate in ms of flashing LED
+#define dictLen     200 // max length of published dictionary
 
 //--------------------------------------
 // DTMF Modifiable Configs (EEPROM Stored)
@@ -108,6 +115,7 @@
 #define interTime  3000 // time in ms allowed between characters before timeout
 #define closeTime 300000 // milliseconds before auto-close (5min)
 #define callTime  120000 // milliseconds between callsign broadcast (2min)
+#define statTime  180000 // milliseconds between status MQTT broadcastt (3min)
 
 //--------------------------------------
 // DTMF / MQTT Engine Protocol Config
@@ -126,9 +134,11 @@ const char* mqtt_broker = "192.168.1.12"; // address of MQTT broker
 const uint16_t mqtt_broker_port = 1883; // port number for MQTT broker
 const char* mqttUser = "device";
 const char* mqttPassword = "equallyspecial";
+
 const char* mqttTopicPub = "hamqtt/rx";    // publish things which were Rx
 const char* mqttTopicSub = "hamqtt/tx";    // subscribe to things to Tx
 const char* mqttTopicStat = "hamqtt/stat"; // publish status
+const char* mqttTopicNet = "hamqtt/net";   // publish net stuff
 
 //--------------------------------------
 // Language
@@ -139,6 +149,7 @@ const char* MsgQSL = "ku ess ell"; // No QSL
 const char* MsgNoQSL = "no ku ess ell"; // No QSL
 const char* MsgRelayOpen = "reelay open";
 const char* MsgRelayClosed = "reelay closed";
+const char* MsgAutoClose = "reelay auto close";
 
 //--------------------------------------
 // Other
@@ -148,6 +159,7 @@ unsigned long waitStart = millis();   // time of start to wait for next char
 unsigned long flashStart = millis();  // time of last LED toggle
 unsigned long openStart = millis();   // time of "opening" relay
 unsigned long callStart = millis();   // time of last callsign
+unsigned long statStart = millis();   // time of last MQTT status message 
 unsigned char newCh;                  // DTMF character
 unsigned char DTMFpos;                // index into DTMF string
 bool relayOpen = false;               // flag that the relay is open
@@ -158,16 +170,20 @@ bool addCallsign = true;              // callsign to be added - true to use on f
 
 char VoiceMsg[voiceLen];              // string to be spoken
 
-char *pubDict = NULL;                 // dictionary to be published on Rx
-char *statDict = NULL;                // dictionary to be published periodically
+char dict[dictLen];                  // dictionary to be published
 
 char *conv = (char *)malloc(20);      // globally allocated space for string conversions
+char *localTime = (char *)malloc(20);
+
+unsigned int CntQSL = 0;              // count of DTMFs in open mode
+unsigned int CntNoQSL = 0;            // count of DTMFs in closed mode
 
 enum DTMFmode { DTMF_IDLE, DTMF_RX, DTMF_WAIT, DTMF_FULL, DTMF_END };
 enum DTMFmode DTMFmode = DTMF_IDLE;
 
 enum LEDMode { LED_OFF, LED_ON, LED_FLASH };
 enum LEDMode LEDmode = LED_OFF;
+
 
 // These are the characters we store when the given numbers are received by
 // the MT8870 module. The order seems odd, but the fact that 0 = D, for
@@ -248,9 +264,6 @@ void connect() {
     if (mqttClient.connect(mqttClientId.c_str(), mqttUser, mqttPassword)) {
       Serial.println(" connected");
       mqttClient.subscribe(mqttTopicSub);
-//      String myCurrentTime = timeClient.getFormattedTime();
-//      mqttClient.publish(mqttTopicPub,("HaMQTT connected. Time: " + myCurrentTime).c_str());
-      mqttClient.publish(mqttTopicPub,"HaMQTT connected.");
     } else {
       Serial.print(".");
 //      Serial.print(". failed, rc=");
@@ -317,46 +330,30 @@ char* bool_str(int b) {
 
 
 //--------------------------------------
-// Append or overwrite key-value pair in a dictionary string
+// Append key-value pair to a dictionary string
 //--------------------------------------
 
-void dictUpdate(char **dict_str, const char *key, const char *value) {
+void dictOpen(char *dest, const char *key, const char *value) {
+  strcpy(dest,"{");   // start with {"
+  dictAppend(dest, key,value);
+}
 
- // ISSUES: remove the first "}"
- // ISSUES: remove the "}" after every key/value pair
- // ISSUES: remove the first ","
- // ISSUES: put the key and value in double-quotes
+void dictClose(char *dest) {
+  dest[strlen(dest)-1] = '\0'; // remove the last comma
+  strcat(dest,"}"); // terminate with }"
+}
 
-  if (*dict_str == NULL) { // Initialise the dictionary string if it's NULL
-    *dict_str = (char *)malloc(3); // "{}\0"
-    strcpy(*dict_str, "{}");
-  }
+void dictAppend(char *dest, const char *key, const char *value) {
 
-  char *key_start = strstr(*dict_str, key);
+  if (strlen(dest) + strlen(key)  + strlen(value) + 6 < dictLen) {
+ 
+    strcat(dest,"\"");      // append "      (1)
+    strcat(dest,key);       // append key
+    strcat(dest,"\":\"");   // append ":"    (+3 = 4)
+    strcat(dest,value);     // append value
+    strcat(dest,"\",");     // append ",     (+2 = 6)
 
-  // Check if the key already exists in the dictionary
-  if (key_start != NULL) { // Key exists, find its value and replace it
-    char *value_start = strchr(key_start, ':') + 2; // move past ": "
-    char *comma_pos = strchr(value_start, ',');
-    if (comma_pos != NULL) { // Key is in the middle of the dictionary
-      int len = comma_pos - value_start;
-      strncpy(value_start, value, len);
-      value_start[len] = '\0';
-    } else { // Key is the last entry in the dictionary
-      strcpy(value_start, value);
-      strcat(*dict_str, "}");
-    } // comma position is null
-  } else { // Key does not exist, add new key-value pair
-    int old_len = strlen(*dict_str);
-    int key_len = strlen(key);
-    int value_len = strlen(value);
-    *dict_str = (char *)realloc(*dict_str, old_len + key_len + value_len + 7); // +7 for ", key: value }"
-    strcat(*dict_str, ", ");
-    strcat(*dict_str, key);
-    strcat(*dict_str, ": ");
-    strcat(*dict_str, value);
-    strcat(*dict_str, "}");
-  } // key start is null
+  } // if it fits
 
 } // dictUpdate
 
@@ -389,17 +386,6 @@ void setup() {
   mqttClient.setCallback(callback);
 
   transmit("Powerup complete", true); // debug
-
-//  dictUpdate(&statDict, "InputTime", int_str(interTime));
-//  dictUpdate(&statDict, "CloseTime", int_str(closeTime));
-//  dictUpdate(&statDict, "CallsignTime", int_str(callTime));
-  dictUpdate(&statDict, "RelayOpen", bool_str(relayOpen));
-  dictUpdate(&statDict, "Callsign", MsgCallsign);
-  dictUpdate(&statDict, "SSID", ssid);
-  dictUpdate(&statDict, "Broker", mqtt_broker);
-  Serial.print(statDict);
-
-  mqttClient.publish(mqttTopicStat,statDict); // publish the dictionary
 
 } // setup
 
@@ -486,33 +472,72 @@ void loop() {
       transmit(MsgRelayClosed,addCallsign);
 
     } else {                              // some other DTMF sequence received
+
       if (relayOpen) {
         // the thing we do with messages goes here
         openStart = millis(); // note the time (assuming it was legit)
         Serial.print("MESSAGE: ");
         Serial.print(DTMFstr);
-        Serial.println(" QSL (acknowledged)");
+        Serial.print(" QSL (acknowledged): ");
 
-        dictUpdate(&pubDict, "DTMF", DTMFstr);
-        mqttClient.publish(mqttTopicPub,pubDict); // publish the dictionary
-
-//        mqttClient.publish(mqttTopicPub,DTMFstr); // publish the DTMF sequence
+        strncpy(localTime, timeClient.getFormattedTime().c_str(),20);
+        dictOpen(dict, "Time", localTime);
+        dictAppend(dict, "DTMF", DTMFstr);
+        dictClose(dict);
+        Serial.println(dict);
+        mqttClient.publish(mqttTopicPub,dict); // publish the dictionary
         transmit(MsgQSL,addCallsign); // Tx acknowledgement (actually maybe we won't?)
+
+        CntQSL+=1;
         
       } else { // relay not open
         Serial.print("MESSAGE: ");
         Serial.print(DTMFstr);
         Serial.println(" NO QSL (not acknowledged)");
-
         transmit(MsgNoQSL,addCallsign);
+
+        CntNoQSL+=1;
 
       } // relay not open
 
     } // switch DTMFstr  
 
-    dictUpdate(&statDict, "Open", bool_str(relayOpen));
-
   } // if parse
+
+  if (millis() > statStart + statTime) { // check last time stat was published
+
+    statStart = millis();
+
+    timeClient.update(); // this is only here because it's the slowest loop
+    
+    strncpy(localTime, timeClient.getFormattedTime().c_str(),20);
+    dictOpen(dict, "Time", localTime);
+    dictAppend(dict, "CS", MsgCallsign);
+    dictAppend(dict, "Open", bool_str(relayOpen));
+    dictAppend(dict, "AddCS", bool_str(addCallsign));
+    dictAppend(dict, "QSLcnt", int_str(CntQSL));
+    dictAppend(dict, "NoQSLcnt", int_str(CntNoQSL));
+    dictAppend(dict, "InputT", int_str(interTime));
+    dictAppend(dict, "CloseT", int_str(closeTime));
+    dictAppend(dict, "CST", int_str(callTime));
+    dictClose(dict);
+    mqttClient.publish(mqttTopicStat,dict); // publish the dictionary
+
+    dictOpen(dict, "SSID", ssid);
+    dictAppend(dict, "BrokerAdd", mqtt_broker);
+    dictAppend(dict, "BrokerPort", int_str(mqtt_broker_port));
+    dictAppend(dict, "BrokerUser", mqttUser);
+    dictClose(dict);
+    mqttClient.publish(mqttTopicNet,dict); // publish the dictionary
+
+  } // stat has expired
+
+  if (relayOpen && millis() > openStart + closeTime) { // relay is open but has timed out
+    relayOpen = false;   // relay is open
+    Serial.println("Relay AUTO-CLOSE");
+    transmit(MsgAutoClose,addCallsign);
+  
+  } // timed out
 
   if (millis() > callStart + callTime) { // check last time callsign was added
     callStart = millis();
@@ -520,7 +545,7 @@ void loop() {
       Serial.println("CALLSIGN needs added");
     }
     addCallsign = true; // needs to be set false after being quqeued
-  }
+  } // callsign time has expired
 
   if (millis() > flashStart + flashTime) { // is it time to toggle the flash?
     flashStart = millis();
@@ -539,6 +564,5 @@ void loop() {
   } // if FlashStart
 
   mqttClient.loop();
-  timeClient.update(); // this probably doesn't need done EVERY loop
 
 } // loop
