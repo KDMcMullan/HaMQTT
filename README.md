@@ -11,8 +11,8 @@ Initially, I had used [TASMOTA](https://tasmota.github.io/) to act as the WiFi a
 
 ## To do:
 - Remove the MY8870 DTMF decoder module, by incorporating its functionality into the firmware.
-- Can the Arduino perform the DTMF decoding? (The would allow the removal of the DTMF hardware.)
-- Consider adding audio streaming, allowing actual voice samples ratehr than electronic voice.
+  - Can the Arduino perform the DTMF decoding? (The would allow the removal of the DTMF hardware.)
+- Consider adding audio streaming, allowing actual voice samples rather than electronic voice.
 
 ## History
 ### v0.90.01 20240223
