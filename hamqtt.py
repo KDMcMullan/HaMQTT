@@ -3,8 +3,9 @@
 ################################################################################
 #
 # HamMQTT Reprocessor
-# - Sbscribes toa n MQTT publication from a Ham radio (Yes!)
+# - Sbscribes to an MQTT publication from a Ham radio (Yes!)
 # - Uses this data to publish an MQTT string which switches lights.
+# - Can also publish a text to the transmitter by way of response to queries.
 #
 # Ken McMullan, M7KCM
 #
@@ -25,34 +26,105 @@
 # "0", a packet is published which causes my studly light to be switched on or
 # off as appropriate.
 #
+# 23-Jun-2026
+# The program subscribes to an MQTT topic, which contains a DTMF sequence. The
+# sequence is nominally sourced from a device like a phone or a ham radio. If
+# the sequences starts with "*" it's a command; if it starts "#", it's a query.
+# A list of recognised sequences "cmds" is stored, along with the actions upon
+# receipt.
+# If the DTMF sequence is recognised a particular MQTT topic and data are
+# published. Additionally, an MQTT topic is subscribed to, which  would contain
+# a response. A JSON string indicates where to find the response within the
+# topic.
+#
 ################################################################################
 #
 # Future
 #
+# Allow the creation of a list of stuff to monitor. So (eg) each time the
+# bathroom light changes, the state is always transmitted, regardless where the
+# command came from.
 #
+# Create a webserver, which allows the creation / editing of the dictionary of
+# commands / responses.
+#
+# Modify the hardware / softwre to allow querying and setting of specific
+# features of the radio transceiver, eg output power, received signal strength,
+# bettery level.
 #
 ################################################################################
 #
 # Issues
 #
+# Need to UNSUBSCRIBE once the message has been received, as some MQTT status
+# messaegs contain multiple sensors and all sensors previously queued will be
+# returned.
 #
+################################################################################
+#
+# Record Structure:
+#
+# Ddtmf: the DTMF string for comparison agains the strings received.
+# Ddesc: a (phoneticised) spoken language interpretation of the sensor.
+# Dtopic: the MQTT topic to be published upon reecipt of "Ddtmf" string.
+# Ddata: the data to be published on teh above topic.
+# DrespTopic: the topic to be subscribed to, which contains the response.
+# DrespKey: the JSON pinpointing the response.
 #
 ################################################################################
 
-# Consider setting teleperiod (in TASMOTA console) while debugging.
-
 MQTTserver="192.168.1.12"
-MQTTuser="blah"
-MQTTpass="blah"
+MQTTuser="device"
+MQTTpass="equallyspecial"
+
+# declaring these as constants should reduce the possibility of human error in creating the dictionary
+
+Ddtmf =  "dtmf"     # DTMF sequence from transmitter
+Ddesc =  "desc"     # spoken description
+Dtopic = "Dtopic"   # MQTT command
+Ddata =  "Ddata"    # MQTT command data 
+DrespTopic =  "DtopicR" # MQTT response topic
+DrespKey =  "Dkey" # MQTT response key
+
+cmds=[
+  {Ddtmf:"#100",  Ddesc:"outsied temperature",       Dtopic:"garageweather/cmnd/status", Ddata:"8",
+                  DrespTopic: "garageweather/stat/STATUS8", DrespKey:"StatusSNS.SI7021-14.Temperature"},
+
+  {Ddtmf:"#101",  Ddesc:"downstairs temperature",    Dtopic:"cloakroom/cmnd/status",     Ddata:"8",
+                  DrespTopic: "cloakroom/stat/STATUS8",     DrespKey:"StatusSNS.SI7021.Temperature"},
+
+  {Ddtmf:"#102",  Ddesc:"up stairs temperature",      Dtopic:"hottank/cmnd/status",       Ddata:"8",
+                  DrespTopic: "hottank/stat/STATUS8",       DrespKey:"StatusSNS.SI7021.Temperature"},
+
+  {Ddtmf:"#200",  Ddesc:"bath rume, mane light",     Dtopic:"ch4_01/cmnd/status",        Ddata:"11",
+                  DrespTopic: "ch4_01/stat/STATUS11",        DrespKey:"StatusSTS.POWER1"},
+
+  {Ddtmf:"#201",  Ddesc:"bath room, merror light",     Dtopic:"ch4_01/cmnd/status",        Ddata:"11",
+                  DrespTopic: "ch4_01/stat/STATUS11",        DrespKey:"StatusSTS.POWER2"},
+
+  {Ddtmf:"*2000", Ddesc:"bath rume, mane light, off",   Dtopic:"ch4_01/cmnd/POWER1",     Ddata:"off"},
+
+  {Ddtmf:"*2001", Ddesc:"bath rume, mane light, on",    Dtopic:"ch4_01/cmnd/POWER1",     Ddata:"on"},
+
+  {Ddtmf:"*2010", Ddesc:"bath rume, merror light off", Dtopic:"ch4_01/cmnd/POWER2",     Ddata:"off"},
+
+  {Ddtmf:"*2011", Ddesc:"bath rume, merror light on",  Dtopic:"ch4_01/cmnd/POWER2",    Ddata:"on"}
+
+] # commands from the transmitter
+
+searches=[] # list of response topics for which we are waiting
+subList=[] # list of topics to which we've subscribed
 
 timerDisplayEnabled = False # no display output
 
-logFileError = "/home/ken/python/mqttproc/hamerror.log"
+logFileError = "/home/ken/python/hamqtt/hamerror.log"
 
-subTopicHam = "hamqtt/tele/RESULT" # subscribe to this
+baseTopic = "hamqtt"
+subTopicStat = baseTopic + "/stat" # subscribe to this
+subTopicNet = baseTopic + "/net"   # subscribe to this
+subTopicRx = baseTopic + "/rx"     # subscribe to this
 
-myTopic = "hamqttproc" # in case I ned to publish a message from me
-
+subTopicTx = baseTopic + "/tx"     # to publish a message from me
 
 # This function causes PAHO errors to be logged to screen.
 logToScreen = False # if False, PAHO callbacks do not display errors.
@@ -92,11 +164,20 @@ def tryGet(payload, key, subkey = ""):
 
   return ret
 
+def getNestedDictKey(dict, dotted_key): # Function to get value using dotted string
+  ret = dict
+  try:
+    for key in dotted_key.split('.'):
+      ret = value[key]
+  except:
+    ret = ""
+ return ret
+    
 def politeExit(exitMsg):
   out = stripLast(datetime.datetime.now(),".")
   appendFile(logFileError, out + " " + exitMsg)
-  mqttc.publish(myTopic + "/status", "Stopped")
-  mqttc.will_set(myTopic + "/LWT", payload="AWOL")
+  mqttc.publish(baseTopic + "/status", "Stopped")
+  mqttc.will_set(baseTopic + "/LWT", payload="AWOL")
   mqttc.loop_stop()
   print(exitMsg)
 
@@ -117,9 +198,6 @@ def signal_handler(incoming, frame):
 signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
 
-def dictEntry(key,val,quoted=False):  
-  return '"' + key + '":' + compoundIf(quoted,'"','') + str(val) + compoundIf(quoted,'"','') 
-
 # The callback for when the client receives a CONNACK response from the MQTT broker.
 def on_connect(client, userdata, flags, rc):
   global MQTTconnected
@@ -132,7 +210,7 @@ def on_connect(client, userdata, flags, rc):
   # reconnect then subscriptions will be renewed.
  
 #  mqttc.subscribe([(subTopicHam,0),(...)])
-  mqttc.subscribe([(subTopicHam,0)])
+  mqttc.subscribe([(subTopicRx,0),(subTopicStat,0),(subTopicNet,0)])
 
 mqttc.on_connect = on_connect
 
@@ -148,39 +226,81 @@ def on_disconnect(client, userdata, flags, rc):
  
 mqttc.on_disconnect = on_disconnect
 
-# The callback for when an unhandled PUBLISH message is received from the MQTT broker.
+# The callback for when a subscribed, topic with no sspecific callback message is received
 def on_message(client, userdata, msg):
 
+  topic = msg.topic
   payload = json.loads(msg.payload.decode("utf-8"))
 
-  print("on_message",str(payload))
+  found = False
 
+# IF the topic is sought, extract the portion of the payload to return (speak) its value.
+
+  for resp in searches:
+    if topic == resp[DrespTopic]: # if the value of the response topic equals the received topic
+      found = True
+      result = getNestedDictKey(payload,resp[DrespKey])
+
+      print(f"EXTRACTED: {resp[DrespKey]} from {topic} as {result}")
+      mqttc.publish(subTopicTx, f"{resp[Ddesc]} {result}") # issue the response to the radio transmitter
+      print(f"SAY: {resp[Ddesc]} {result}")
+
+  if found:
+    print("Attended: ",end="")
+  else:
+    print("Unattended: ",end="")
+  print(f"{str(topic)}: {str(payload)}")
+ 
 mqttc.on_message = on_message
 
-def callbackHam(client, userdata, msg):
+def callbackRx(client, userdata, msg):
 
   payload = json.loads(msg.payload.decode("utf-8"))
-  received = payload.get("SerialReceived") # the code received from the TASMOTA relaying the DTMF
-  mtype = received.get("TYPE") # record always contains TYPE and DATA definitions
-  mdata = received.get("DATA")
 
-#  print("DEBUG: ", mtype, mdata)
+  time = payload.get("Time") # record always contains TYPE and DATA definitions
+  DTMF = payload.get("DTMF")
 
-  match mtype:
-    case "STATUS":
-      print("Status:",mdata)
-    case "DTMF":
-      print("DTMF:",mdata)
+  print(f"{stripLast(datetime.datetime.now())} ", end="")
+  print("DEBUG: ", DTMF)
 
-      if mdata == "0":
-        mqttc.publish("studylight/cmnd/power", "0")
-      if mdata == "1":
-        mqttc.publish("studylight/cmnd/power", "1")
+  found = False
+  for cmd in cmds:
+    if cmd[Ddtmf] == DTMF: # if the value of the DTMF key equals the received DTMF sequence
+      found = True
 
-    case _:
-      print("SerialReceived.TYPE is unknown.")
+      # Initial thoughts were that there's a better way to do this.
+      # Regardless if it's a set or a query, both consist of a command and a response:
+      #   simply publish the command and subscribe to / act on the response.
+      # Conversely, it may actually have to get more complicated:
+      #   if we want to set a value other than 1 or 0, we'll need to further parse the DTMF string.  
 
-mqttc.message_callback_add(subTopicHam, callbackHam)
+      if cmd[Ddtmf][0] == "*": # set
+        print(f"SET: {cmd[Dtopic]} {cmd[Ddata]} \"{cmd[Ddesc]}\"")
+        mqttc.publish(cmd[Dtopic], cmd[Ddata]) # issue the command to the remote device
+        mqttc.publish(subTopicTx, cmd[Ddesc]) # issue the response to the radio transmitter
+
+      if cmd[Ddtmf][0] == "#": # query
+        print(f"QUERY: {cmd[Dtopic]} {cmd[Ddata]} \"{cmd[Ddesc]}\"")
+        print(f"EXPECTING: {cmd[DrespTopic]} {cmd[DrespKey]}")
+        searches.append(cmd) # load the response search list
+        
+#        mqttc.publish(subTopicTx, "wilco") # respond to sender that the request is in progress
+        mqttc.publish(cmd[Dtopic], cmd[Ddata]) # provoke the response
+        print(f"SEARCHES: {searches}")
+
+# WE SHOULD UNSUBSCRIBE once the message has been received, as some MQTT status messaegs contain
+# multiple sensors and all sensors previously queued will be returned.
+
+        if cmd[DrespTopic] not in subList: # command response has not yet been subscribed
+          subList.append(cmd[DrespTopic])
+          mqttc.subscribe(cmd[DrespTopic])
+#          print(f"New subscription: {cmd[DrespTopic]}")
+
+  if not found:
+    print(f"DTMF {DTMF} unrecognised.")
+    mqttc.publish(subTopicTx, DTMF + " not recognised") # issue the response to the radio transmitter
+
+mqttc.message_callback_add(subTopicRx, callbackRx)
 
 # PAHO (from v1.4) doesn't raise errors; it logs them. This function causes them to be printed.
 def on_log(mqttc, obj, level, string):
@@ -203,20 +323,48 @@ def formatTime(s):
 
   return tStr
 
+def plurals(n):
+  return compoundIf(n == 1,"","s")
 
+  
 ########################################
 # Main Program Starts Here
 ########################################
 
 print("Starting...")
 
+# test the array for duplicates at run start.
 
-mqttc.will_set(myTopic + "/LWT", payload="Online")
+cmdlist = []
+dupelist = []
+dupecnt = 0
+seqcnt = 0
+for cmd in cmds:
+  if cmd[Ddtmf] in cmdlist:
+    dupecnt += 1
+    dupelist.append(cmd[Ddtmf])
+  else:
+    cmdlist.append(cmd[Ddtmf])
+  seqcnt += 1
+  
+del(cmdlist) # housekeeping: don't need this any more
+
+print(f"{seqcnt} sequence{plurals(seqcnt)} {dupecnt} duplicate{plurals(dupecnt)}.")
+if dupecnt > 0:
+  print(f"Duplicate{plurals(dupecnt)}: {dupelist}")
+
+del(dupelist) # housekeeping
+
+# MQTT broker connection data
+  
+mqttc.will_set(baseTopic + "/LWT", payload="Online")
 mqttc.reconnect_delay_set(min_delay=2, max_delay=64)
 mqttc.username_pw_set(MQTTuser, MQTTpass)
 
 print("Running...")
 print("Ctrl-C to exit")
+
+# Main loop
 
 while (True):
 
