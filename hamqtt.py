@@ -26,7 +26,7 @@
 # "0", a packet is published which causes my studly light to be switched on or
 # off as appropriate.
 #
-# 23-Jun-2026
+# 23-Jun-2024
 # The program subscribes to an MQTT topic, which contains a DTMF sequence. The
 # sequence is nominally sourced from a device like a phone or a ham radio. If
 # the sequences starts with "*" it's a command; if it starts "#", it's a query.
@@ -37,9 +37,15 @@
 # a response. A JSON string indicates where to find the response within the
 # topic.
 #
+# 19-Jul-2024
+# Fixed problem where status of a query getting properly extracted.
+# Removed queries from the "sought" list once they've been received.
+#
 ################################################################################
 #
 # Future
+#
+# Move the command / query specifications into a seperate text file.
 #
 # Allow the creation of a list of stuff to monitor. So (eg) each time the
 # bathroom light changes, the state is always transmitted, regardless where the
@@ -48,7 +54,7 @@
 # Create a webserver, which allows the creation / editing of the dictionary of
 # commands / responses.
 #
-# Modify the hardware / softwre to allow querying and setting of specific
+# Modify the hardware / software to allow querying and setting of specific
 # features of the radio transceiver, eg output power, received signal strength,
 # bettery level.
 #
@@ -67,7 +73,7 @@
 # Ddtmf: the DTMF string for comparison agains the strings received.
 # Ddesc: a (phoneticised) spoken language interpretation of the sensor.
 # Dtopic: the MQTT topic to be published upon reecipt of "Ddtmf" string.
-# Ddata: the data to be published on teh above topic.
+# Ddata: the data to be published on the above topic.
 # DrespTopic: the topic to be subscribed to, which contains the response.
 # DrespKey: the JSON pinpointing the response.
 #
@@ -112,7 +118,7 @@ cmds=[
 
 ] # commands from the transmitter
 
-searches=[] # list of response topics for which we are waiting
+soughtList=[] # list of response topics for which we are waiting
 subList=[] # list of topics to which we've subscribed
 
 timerDisplayEnabled = False # no display output
@@ -164,14 +170,18 @@ def tryGet(payload, key, subkey = ""):
 
   return ret
 
-def getNestedDictKey(dict, dotted_key): # Function to get value using dotted string
-  ret = dict
+def getNestedDictKey(dic, dotted_key): # Function to get value using dotted string
+
+#  print(f"getNestedDictKey({dic}, {dotted_key.split('.')}")
+  ret = dic
   try:
-    for key in dotted_key.split('.'):
-      ret = value[key]
+    for key in dotted_key.split('.'): # recursively search the record for successive dotted keys
+      ret = ret[key]                  # search the newly extracted record for the next key
+#      print(f"KEY {key}")
   except:
     ret = ""
- return ret
+
+  return ret
     
 def politeExit(exitMsg):
   out = stripLast(datetime.datetime.now(),".")
@@ -229,28 +239,38 @@ mqttc.on_disconnect = on_disconnect
 # The callback for when a subscribed, topic with no sspecific callback message is received
 def on_message(client, userdata, msg):
 
+  global soughtList
+  
   topic = msg.topic
   payload = json.loads(msg.payload.decode("utf-8"))
 
-  found = False
-
 # IF the topic is sought, extract the portion of the payload to return (speak) its value.
 
-  for resp in searches:
+  found = False
+  for resp in soughtList:
     if topic == resp[DrespTopic]: # if the value of the response topic equals the received topic
       found = True
+      lastResp = resp
       result = getNestedDictKey(payload,resp[DrespKey])
 
-      print(f"EXTRACTED: {resp[DrespKey]} from {topic} as {result}")
-      mqttc.publish(subTopicTx, f"{resp[Ddesc]} {result}") # issue the response to the radio transmitter
-      print(f"SAY: {resp[Ddesc]} {result}")
+#      print(f"EXTRACTED: {resp[DrespKey]} from {topic} as {result}")
+#      print(f"SAY: {resp[Ddesc]} {result}")
+      mqttc.publish(subTopicTx, f"{resp[Ddesc]}, {result}") # issue the response to the radio transmitter
 
   if found:
-    print("Attended: ",end="")
-  else:
-    print("Unattended: ",end="")
-  print(f"{str(topic)}: {str(payload)}")
- 
+    # not sure why this is necessary.
+    # .remove() seems to leave a NoneType if we delete the only element
+    if len(soughtList) == 1:
+      soughtList = []
+    else:
+      soughtList = soughtList.remove(lastResp)
+
+#  if found:
+#    print("Attended: ",end="")
+#  else:
+#    print("Unattended: ",end="")
+#  print(f"{str(topic)}: {str(payload)}")
+
 mqttc.on_message = on_message
 
 def callbackRx(client, userdata, msg):
@@ -260,8 +280,8 @@ def callbackRx(client, userdata, msg):
   time = payload.get("Time") # record always contains TYPE and DATA definitions
   DTMF = payload.get("DTMF")
 
-  print(f"{stripLast(datetime.datetime.now())} ", end="")
-  print("DEBUG: ", DTMF)
+#  print(f"{stripLast(datetime.datetime.now())} ", end="")
+#  print("DEBUG: ", DTMF)
 
   found = False
   for cmd in cmds:
@@ -280,16 +300,19 @@ def callbackRx(client, userdata, msg):
         mqttc.publish(subTopicTx, cmd[Ddesc]) # issue the response to the radio transmitter
 
       if cmd[Ddtmf][0] == "#": # query
+        if cmd not in soughtList: soughtList.append(cmd) # add the response to the response search list
         print(f"QUERY: {cmd[Dtopic]} {cmd[Ddata]} \"{cmd[Ddesc]}\"")
-        print(f"EXPECTING: {cmd[DrespTopic]} {cmd[DrespKey]}")
-        searches.append(cmd) # load the response search list
+ #       print(f"EXPECTING: {cmd[DrespTopic]} {cmd[DrespKey]}")
         
+# We should remove from the soughtList once the message has been received, as otherwise, the 
+# message will be repeated every time an MQTT status message containing the sought key is reecived,
+# the message will be repeated.
+
 #        mqttc.publish(subTopicTx, "wilco") # respond to sender that the request is in progress
         mqttc.publish(cmd[Dtopic], cmd[Ddata]) # provoke the response
-        print(f"SEARCHES: {searches}")
 
-# WE SHOULD UNSUBSCRIBE once the message has been received, as some MQTT status messaegs contain
-# multiple sensors and all sensors previously queued will be returned.
+# No need to UNSUBSCRIBE once the message has been received, as we'll only end up subscribing again.
+# In any case the soughtList manages and finds responses we're seeking within the subscriptions.
 
         if cmd[DrespTopic] not in subList: # command response has not yet been subscribed
           subList.append(cmd[DrespTopic])
@@ -297,7 +320,7 @@ def callbackRx(client, userdata, msg):
 #          print(f"New subscription: {cmd[DrespTopic]}")
 
   if not found:
-    print(f"DTMF {DTMF} unrecognised.")
+    print(f"UNRECOGNISED: DTMF {DTMF}")
     mqttc.publish(subTopicTx, DTMF + " not recognised") # issue the response to the radio transmitter
 
 mqttc.message_callback_add(subTopicRx, callbackRx)
