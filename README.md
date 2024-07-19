@@ -68,3 +68,15 @@ Initially, I had used [TASMOTA](https://tasmota.github.io/) to act as the WiFi a
 - Now publishes an MQTT message on receipt of a DTMF sequence, if the relay is open.
 - Periodically publishes an MQTT status message, and network information, even if relay is closed.
 - Added in some QSO / no QSO counters just for sport.
+
+### v0.95.01 20240708
+- Added a Timer class, since the timer code is a bit repetative; makes it easier to manage.
+- Added automatic callsign broadcast on an infrequent basis, based on RSGB recommendation.
+
+### v0.95.02 20240708
+- Shortened some key values in MQTT dictionaries.
+- Moved the time client updater into the slowest loop.
+- Added certain user modifiable parameters to EEPROM.
+
+### v0.95.03 20240719
+- The string components of "EEPROM" have been commented out as they don't work.
