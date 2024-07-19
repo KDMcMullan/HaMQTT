@@ -61,6 +61,10 @@
 /* Moved the time client updater into the slowest loop.
 /* Added certain user modifiable parameters to EEPROM.
 /*
+/* v0.95.03 20240719
+/* The string componenes of "EEPROM" have been commented out as they don't
+/* work.
+/*
 /****************************************************************************/
 /*
 /* To Do
@@ -150,8 +154,8 @@
 
 #define flashTime       250  // ms of half period of flash (250ms = 2Hz)
 #define charTime       3000  // ms between DTMF characters before timeout (3 sec)
-#define preCallTime  120000  // ms between callsign prepend (2 min)
-#define autoCallTime 600000  // ms between callsign prepend (10 min)
+#define preCallTime  300000  // ms between callsign prepend (5 min)
+#define autoCallTime 600000  // ms between callsign auto send (10 min)
 
 
 //--------------------------------------
@@ -460,30 +464,31 @@ void setup() {
 
   prefs.begin("HAM", false); // false means read/write mode
 
-  if (prefs.getUChar("V", 0) == 0) { // namespace version is not as expected: add the keys
+  if (prefs.getUChar("V", 0) != 0) { // namespace version is not as expected: add the keys
     prefs.putUChar("V", 0); // store EEPROM format version
-    prefs.putString("CS",MsgCallsign);
-    prefs.putString("ID",ssid);
-    prefs.putString("PW",password);
-    prefs.putString("MB",mqtt_broker);
+//    prefs.putString("CS",MsgCallsign);
+//    prefs.putString("ID",ssid);
+//    prefs.putString("PW",password);
+//    prefs.putString("MB",mqtt_broker);
     prefs.putUShort("MP",mqtt_broker_port);
-    prefs.putString("MU",mqttUser);
-    prefs.putString("MP",mqttPassword);
+//    prefs.putString("MU",mqttUser);
+//    prefs.putString("MP",mqttPassword);
     prefs.putULong("ST",statTime);
     prefs.putULong("OT",openTime);
     Serial.println("Prefs not present.");
 
-// I don't completely understand why this works, since there are defined as const.
-// Perhaps it's teh adress of which is a const, therefore i have to be very careful with the lengths?
+// The string components don't work.
+// Possibly something to do with being const?
+// Somethng to do with the lengths?
 
   } else {                           // read the keys from the namespace
-    MsgCallsign =      prefs.getString("CS",MsgCallsign).c_str();
-    ssid =             prefs.getString("ID",ssid).c_str();
-    password =         prefs.getString("PW",password).c_str();
-    mqtt_broker =      prefs.getString("MB",mqtt_broker).c_str();
+//    MsgCallsign =      prefs.getString("CS",MsgCallsign).c_str();
+//    ssid =             prefs.getString("ID",ssid).c_str();
+//    password =         prefs.getString("PW",password).c_str();
+//    mqtt_broker =      prefs.getString("MB",mqtt_broker).c_str();
     mqtt_broker_port = prefs.getUShort("MP",mqtt_broker_port);
-    mqttUser =         prefs.getString("MU",mqttUser).c_str();
-    mqttPassword =     prefs.getString("MP",mqttPassword).c_str();
+//    mqttUser =         prefs.getString("MU",mqttUser).c_str();
+//    mqttPassword =     prefs.getString("MP",mqttPassword).c_str();
     statTime =         prefs.getULong("ST",statTime);
     openTime =         prefs.getULong("OT",openTime);
     Serial.println("Used existing prefs.");
